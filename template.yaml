@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  presigned-url-regenerator
+
+  SAM Template for regenerating presigned URLs in DynamoDB table every 5 days
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        NODE_OPTIONS: "--enable-source-maps"
+
+Parameters:
+  TableName:
+    Type: String
+    Default: GalleriesCamel
+    Description: DynamoDB table name
+
+  S3BucketName:
+    Type: String
+    Default: niebieskie-aparaty-test-upload
+    Description: S3 bucket name where files are stored
+
+  PresignedUrlExpirationDays:
+    Type: Number
+    Default: 7
+    Description: Number of days for presigned URL expiration
+
+Resources:
+  PresignedUrlRegeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-presigned-url-regenerator"
+      CodeUri: src/
+      Handler: handler.regeneratePresignedUrls
+      Description: Regenerates presigned URLs for files in DynamoDB table
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TableName
+          S3_BUCKET_NAME: !Ref S3BucketName
+          PRESIGNED_URL_EXPIRATION_DAYS: !Ref PresignedUrlExpirationDays
+      Events:
+        ScheduleEvent:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 2 */5 * ? *)
+            Description: Trigger every 5 days at 02:00 AM
+            Enabled: true
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref TableName
+        - S3ReadPolicy:
+            BucketName: !Ref S3BucketName
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectVersion
+              Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+
+  PresignedUrlRegeneratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${PresignedUrlRegeneratorFunction}"
+      RetentionInDays: 30
+
+Outputs:
+  PresignedUrlRegeneratorFunction:
+    Description: "Presigned URL Regenerator Lambda Function ARN"
+    Value: !GetAtt PresignedUrlRegeneratorFunction.Arn
+
+  PresignedUrlRegeneratorFunctionIamRole:
+    Description: "Implicit IAM Role created for Presigned URL Regenerator function"
+    Value: !GetAtt PresignedUrlRegeneratorFunctionRole.Arn
