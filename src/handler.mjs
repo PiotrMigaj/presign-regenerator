@@ -59,6 +59,63 @@ async function generatePresignedUrl(objectKey) {
 }
 
 /**
+ * Determine the primary key for a DynamoDB item
+ * Since fileName is the partition key, we use it as the primary key
+ * @param {Object} item - DynamoDB item
+ * @returns {Object|null} - Primary key object or null if cannot be determined
+ */
+function determinePrimaryKey(item) {
+  // Log the item structure for debugging
+  console.log(`Determining key for item:`, JSON.stringify(item, null, 2));
+
+  // Since fileName is the partition key, prioritize it
+  if (item.fileName) {
+    const key = { fileName: item.fileName };
+    console.log(`Using fileName as partition key:`, JSON.stringify(key, null, 2));
+    return key;
+  }
+
+  // Fallback patterns if fileName is not available
+  const fallbackPatterns = [
+    // Pattern 1: id field (common single key pattern)
+    () => {
+      if (item.id) {
+        return { id: item.id };
+      }
+      return null;
+    },
+    
+    // Pattern 2: eventId only (single key)
+    () => {
+      if (item.eventId) {
+        return { eventId: item.eventId };
+      }
+      return null;
+    },
+    
+    // Pattern 3: username only (single key)
+    () => {
+      if (item.username) {
+        return { username: item.username };
+      }
+      return null;
+    }
+  ];
+
+  // Try fallback patterns
+  for (const pattern of fallbackPatterns) {
+    const key = pattern();
+    if (key) {
+      console.log(`Using fallback key pattern:`, JSON.stringify(key, null, 2));
+      return key;
+    }
+  }
+
+  console.error('No valid key found for item:', JSON.stringify(item, null, 2));
+  return null;
+}
+
+/**
  * Update item in DynamoDB with new presigned URLs
  * @param {Object} item - DynamoDB item
  * @returns {Promise<void>}
@@ -107,16 +164,10 @@ async function updateItemPresignedUrls(item) {
       return;
     }
 
-    // Construct primary key
-    const key = {};
-    if (item.eventId && item.fileName) {
-      key.eventId = item.eventId;
-      key.fileName = item.fileName;
-    } else if (item.username && item.fileName) {
-      key.username = item.username;
-      key.fileName = item.fileName;
-    } else {
-      console.error('Unable to determine primary key for item:', item);
+    // Determine primary key
+    const key = determinePrimaryKey(item);
+    if (!key) {
+      console.error('Unable to determine primary key for item:', JSON.stringify(item, null, 2));
       return;
     }
 
@@ -129,12 +180,18 @@ async function updateItemPresignedUrls(item) {
       ReturnValues: 'UPDATED_NEW'
     });
 
-    await docClient.send(updateCommand);
-    console.log(`Successfully updated presigned URLs for item: ${item.fileName}`);
+    console.log(`Attempting to update item with key:`, JSON.stringify(key, null, 2));
+    console.log(`Update expression:`, updateCommand.UpdateExpression);
+    
+    const result = await docClient.send(updateCommand);
+    console.log(`Successfully updated presigned URLs for item: ${item.fileName || 'unknown'}`);
 
   } catch (error) {
-    console.error(`Error updating item ${item.fileName}:`, error);
-    throw error;
+    console.error(`Error updating item ${item.fileName || 'unknown'}:`, error);
+    console.error(`Item details:`, JSON.stringify(item, null, 2));
+    
+    // Don't throw the error to continue processing other items
+    // Just log it and continue
   }
 }
 
@@ -147,7 +204,14 @@ async function processItemsBatch(items) {
   const promises = items.map(item => updateItemPresignedUrls(item));
   
   try {
-    await Promise.allSettled(promises);
+    const results = await Promise.allSettled(promises);
+    
+    // Log results for debugging
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(`Failed to process item ${index}:`, result.reason);
+      }
+    });
   } catch (error) {
     console.error('Error processing batch:', error);
   }
@@ -166,6 +230,7 @@ export const regeneratePresignedUrls = async (event, context) => {
   const startTime = Date.now();
   let processedCount = 0;
   let errorCount = 0;
+  let successCount = 0;
 
   try {
     // Validate environment variables
@@ -174,6 +239,7 @@ export const regeneratePresignedUrls = async (event, context) => {
     }
 
     console.log(`Configuration: TABLE_NAME=${TABLE_NAME}, S3_BUCKET_NAME=${S3_BUCKET_NAME}, EXPIRATION_DAYS=${PRESIGNED_URL_EXPIRATION_DAYS}`);
+    console.log(`Table schema: fileName is the partition key (single primary key)`);
 
     let lastEvaluatedKey = null;
     let hasMoreItems = true;
@@ -197,6 +263,11 @@ export const regeneratePresignedUrls = async (event, context) => {
 
         if (result.Items && result.Items.length > 0) {
           console.log(`Processing ${result.Items.length} items`);
+          
+          // Log first item structure for debugging
+          if (result.Items.length > 0) {
+            console.log('Sample item structure:', JSON.stringify(result.Items[0], null, 2));
+          }
           
           // Process items in current batch
           await processItemsBatch(result.Items);
@@ -228,7 +299,8 @@ export const regeneratePresignedUrls = async (event, context) => {
     }
 
     const duration = Date.now() - startTime;
-    const successMessage = `Successfully processed ${processedCount} items in ${duration}ms`;
+    successCount = processedCount - errorCount;
+    const successMessage = `Successfully processed ${processedCount} items (${successCount} successful, ${errorCount} errors) in ${duration}ms`;
     console.log(successMessage);
 
     return {
@@ -236,6 +308,7 @@ export const regeneratePresignedUrls = async (event, context) => {
       body: JSON.stringify({
         message: successMessage,
         processedCount,
+        successCount,
         errorCount,
         duration
       })
@@ -250,6 +323,7 @@ export const regeneratePresignedUrls = async (event, context) => {
       body: JSON.stringify({
         message: errorMessage,
         processedCount,
+        successCount,
         errorCount,
         error: error.message
       })
