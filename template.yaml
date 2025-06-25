@@ -32,6 +32,16 @@ Parameters:
     Default: 7
     Description: Number of days for presigned URL expiration
 
+  SESFromEmail:
+    Type: String
+    Default: ""
+    Description: Email address to send notifications from (must be verified in SES)
+
+  SESToEmails:
+    Type: String
+    Default: ""
+    Description: Comma-separated list of email addresses to send notifications to
+
 Resources:
   PresignedUrlRegeneratorFunction:
     Type: AWS::Serverless::Function
@@ -45,6 +55,8 @@ Resources:
           TABLE_NAME: !Ref TableName
           S3_BUCKET_NAME: !Ref S3BucketName
           PRESIGNED_URL_EXPIRATION_DAYS: !Ref PresignedUrlExpirationDays
+          SES_FROM_EMAIL: !Ref SESFromEmail
+          SES_TO_EMAILS: !Ref SESToEmails
       Events:
         ScheduleEvent:
           Type: Schedule
@@ -66,6 +78,14 @@ Resources:
               Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
             - Effect: Allow
               Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  "ses:FromAddress": !Ref SESFromEmail
+            - Effect: Allow
+              Action:
                 - logs:CreateLogGroup
                 - logs:CreateLogStream
                 - logs:PutLogEvents
@@ -85,3 +105,7 @@ Outputs:
   PresignedUrlRegeneratorFunctionIamRole:
     Description: "Implicit IAM Role created for Presigned URL Regenerator function"
     Value: !GetAtt PresignedUrlRegeneratorFunctionRole.Arn
+
+  SESConfiguration:
+    Description: "SES Email Configuration"
+    Value: !Sub "From: ${SESFromEmail}, To: ${SESToEmails}"

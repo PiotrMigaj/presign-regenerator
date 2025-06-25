@@ -2,6 +2,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { sendJobSummaryEmail } from './email-service.mjs';
 
 // Initialize AWS clients
 const dynamoClient = new DynamoDBClient({
@@ -118,7 +119,7 @@ function determinePrimaryKey(item) {
 /**
  * Update item in DynamoDB with new presigned URLs
  * @param {Object} item - DynamoDB item
- * @returns {Promise<void>}
+ * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function updateItemPresignedUrls(item) {
   try {
@@ -161,14 +162,14 @@ async function updateItemPresignedUrls(item) {
     // Skip update if no URLs were generated
     if (updateExpressions.length === 1) { // Only presignDateTime
       console.warn(`No presigned URLs generated for item ${item.fileName || 'unknown'}`);
-      return;
+      return { success: false, error: 'No presigned URLs generated' };
     }
 
     // Determine primary key
     const key = determinePrimaryKey(item);
     if (!key) {
       console.error('Unable to determine primary key for item:', JSON.stringify(item, null, 2));
-      return;
+      return { success: false, error: 'Unable to determine primary key' };
     }
 
     const updateCommand = new UpdateCommand({
@@ -185,20 +186,19 @@ async function updateItemPresignedUrls(item) {
     
     const result = await docClient.send(updateCommand);
     console.log(`Successfully updated presigned URLs for item: ${item.fileName || 'unknown'}`);
+    return { success: true };
 
   } catch (error) {
     console.error(`Error updating item ${item.fileName || 'unknown'}:`, error);
     console.error(`Item details:`, JSON.stringify(item, null, 2));
-    
-    // Don't throw the error to continue processing other items
-    // Just log it and continue
+    return { success: false, error: error.message };
   }
 }
 
 /**
  * Process items in batches
  * @param {Array} items - Array of DynamoDB items
- * @returns {Promise<void>}
+ * @returns {Promise<{successCount: number, errorCount: number}>}
  */
 async function processItemsBatch(items) {
   const promises = items.map(item => updateItemPresignedUrls(item));
@@ -206,14 +206,27 @@ async function processItemsBatch(items) {
   try {
     const results = await Promise.allSettled(promises);
     
-    // Log results for debugging
+    let successCount = 0;
+    let errorCount = 0;
+    
+    // Count results
     results.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        console.error(`Failed to process item ${index}:`, result.reason);
+      if (result.status === 'fulfilled' && result.value.success) {
+        successCount++;
+      } else {
+        errorCount++;
+        if (result.status === 'rejected') {
+          console.error(`Failed to process item ${index}:`, result.reason);
+        } else if (result.value.error) {
+          console.error(`Failed to process item ${index}:`, result.value.error);
+        }
       }
     });
+
+    return { successCount, errorCount };
   } catch (error) {
     console.error('Error processing batch:', error);
+    return { successCount: 0, errorCount: items.length };
   }
 }
 
@@ -231,6 +244,8 @@ export const regeneratePresignedUrls = async (event, context) => {
   let processedCount = 0;
   let errorCount = 0;
   let successCount = 0;
+  let jobStatus = 'success';
+  let jobError = null;
 
   try {
     // Validate environment variables
@@ -270,8 +285,10 @@ export const regeneratePresignedUrls = async (event, context) => {
           }
           
           // Process items in current batch
-          await processItemsBatch(result.Items);
+          const batchResults = await processItemsBatch(result.Items);
           processedCount += result.Items.length;
+          successCount += batchResults.successCount;
+          errorCount += batchResults.errorCount;
         }
 
         // Check if there are more items to process
@@ -299,9 +316,24 @@ export const regeneratePresignedUrls = async (event, context) => {
     }
 
     const duration = Date.now() - startTime;
-    successCount = processedCount - errorCount;
     const successMessage = `Successfully processed ${processedCount} items (${successCount} successful, ${errorCount} errors) in ${duration}ms`;
     console.log(successMessage);
+
+    // Prepare job summary for email
+    const jobSummary = {
+      processedCount,
+      successCount,
+      errorCount,
+      duration,
+      startTime,
+      tableName: TABLE_NAME,
+      bucketName: S3_BUCKET_NAME,
+      expirationDays: PRESIGNED_URL_EXPIRATION_DAYS,
+      status: jobStatus
+    };
+
+    // Send email notification
+    await sendJobSummaryEmail(jobSummary);
 
     return {
       statusCode: 200,
@@ -315,8 +347,28 @@ export const regeneratePresignedUrls = async (event, context) => {
     };
 
   } catch (error) {
+    jobStatus = 'failed';
+    jobError = error.message;
+    
     const errorMessage = `Error in presigned URL regeneration: ${error.message}`;
     console.error(errorMessage, error);
+
+    // Prepare job summary for email (even for failures)
+    const jobSummary = {
+      processedCount,
+      successCount,
+      errorCount,
+      duration: Date.now() - startTime,
+      startTime,
+      tableName: TABLE_NAME || 'Unknown',
+      bucketName: S3_BUCKET_NAME || 'Unknown',
+      expirationDays: PRESIGNED_URL_EXPIRATION_DAYS,
+      status: jobStatus,
+      error: jobError
+    };
+
+    // Send email notification for failure
+    await sendJobSummaryEmail(jobSummary);
 
     return {
       statusCode: 500,
