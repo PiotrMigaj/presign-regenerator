@@ -42,6 +42,16 @@ Parameters:
     Default: ""
     Description: Comma-separated list of email addresses to send notifications to
 
+  KeyID:
+    Type: String
+    Default: ""
+    Description: AWS_ACCESS_KEY_ID that must be provided
+
+  AccesKey:
+    Type: String
+    Default: ""
+    Description: AWS_SECRET_ACCESS_KEY that must be provided
+
 Resources:
   PresignedUrlRegeneratorFunction:
     Type: AWS::Serverless::Function
@@ -57,6 +67,8 @@ Resources:
           PRESIGNED_URL_EXPIRATION_DAYS: !Ref PresignedUrlExpirationDays
           SES_FROM_EMAIL: !Ref SESFromEmail
           SES_TO_EMAILS: !Ref SESToEmails
+          KEY_ID: !Ref KeyID
+          ACCESS_KEY: !Ref AccesKey
       Events:
         ScheduleEvent:
           Type: Schedule
@@ -109,3 +121,7 @@ Outputs:
   SESConfiguration:
     Description: "SES Email Configuration"
     Value: !Sub "From: ${SESFromEmail}, To: ${SESToEmails}"
+
+  AWSCredendialsConfiguration:
+    Description: "AWS credendials configuration Configuration"
+    Value: !Sub "AWS_SECRET_ACCESS_KEY: ${KeyID}, AWS_SECRET_ACCESS_KEY: ${AccesKey}"
