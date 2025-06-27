@@ -323,6 +323,10 @@ export const regeneratePresignedUrls = async (event, context) => {
     }
 
     const duration = Date.now() - startTime;
+    // Set jobStatus based on errorCount and successCount
+    if (errorCount > 0) {
+      jobStatus = successCount > 0 ? "partial" : "failed";
+    }
     const successMessage = `Successfully processed ${processedCount} items (${successCount} successful, ${errorCount} errors) in ${duration}ms`;
     console.log(successMessage);
 
