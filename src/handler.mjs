@@ -73,6 +73,17 @@ async function generatePresignedUrl(objectKey) {
 function determinePrimaryKey(item) {
   console.log(`Determining key for item:`, JSON.stringify(item, null, 2));
 
+  // Composite key: fileName (pk) + eventId (sk)
+  if (item.fileName && item.eventId) {
+    const key = { fileName: item.fileName, eventId: item.eventId };
+    console.log(
+      `Using fileName and eventId as composite key:`,
+      JSON.stringify(key, null, 2)
+    );
+    return key;
+  }
+
+  // Fallback: fileName only
   if (item.fileName) {
     const key = { fileName: item.fileName };
     console.log(
